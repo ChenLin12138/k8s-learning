@@ -161,7 +161,7 @@ spec:
     spec:
       containers:
       - name: kubia
-        image: samzhang80/kubia
+        image: scorpionchenlin/kubia
         ports:
         - name: http
           containerPort: 8080
@@ -530,7 +530,12 @@ C:\NotBackedUp\learn\k8s-learning-master\C5>minikube addons list
 启动
 下面本地没有成功，所以在minikube模拟平台上测试的
 ```
-minikube addons enable ingress
+$ minikube addons enable ingress
+  - Using image jettech/kube-webhook-certgen:v1.3.0
+  - Using image us.gcr.io/k8s-artifacts-prod/ingress-nginx/controller:v0.40.2
+  - Using image jettech/kube-webhook-certgen:v1.2.2
+* Verifying ingress addon...
+* The 'ingress' addon is enabled
 ```
 查询ingress的po
 ```
@@ -538,6 +543,52 @@ kubectl get po --all-namespaces
 ```
 
 ### 5.4.1 创建Ingress资源
+
+这里需要注意的是，这个kubia-ingress.yaml，ingress资源暴露的是service资源kubia-svc-nodeport.yaml
+kubia-svc-nodeport.yaml资源通过选择器selector:app:kubia，暴露了port内部的资源.这个app:kubia是被kubia-rc-named-port.yaml(rc)这个资源管理起来的。
+所以这里有个小坑，就是pod必须是包含选择器app:kubia的pod才行，如果使用第二章中的kubia-manual是不行的，因为他没有app:kuiba这个tag
+rc/pod层级
+kubia-rc-named-port.yaml
+```
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: kubia
+spec:
+  replicas: 3
+  selector:
+    app: kubia
+  template:
+    metadata:
+      labels:
+        app: kubia
+    spec:
+      containers:
+      - name: kubia
+        image: scorpionchenlin/kubia
+        ports:
+        - name: http
+          containerPort: 8080
+        - name: https
+          containerPort: 8443
+```
+service 层级
+kubia-svc-nodeport.yaml
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubia-nodeport
+spec:
+  type: NodePort
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30123
+  selector:
+    app: kubia
+```
+ingress 层级
 kubia-ingress.yaml
 ```
 apiVersion: extensions/v1beta1
@@ -564,15 +615,343 @@ ingress.extensions/kubia created
 获取Ingress的ip地址
 ```
 $ kubectl get ing
-NAME    CLASS    HOSTS               ADDRESS        PORTS   AGE
-kubia   <none>   kubia.example.com   172.17.0.111   80      51s
+NAME    CLASS    HOSTS               ADDRESS       PORTS   AGE
+kubia   <none>   kubia.example.com   172.17.0.63   80      104s
 ```
 在hosts中配置ingress域名映射
+添加hostname和ip的映射
+```
+$ cat /etc/hosts
+127.0.0.1       localhost
+127.0.1.1       host01
+
+# The following lines are desirable for IPv6 capable hosts
+::1     localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+127.0.0.1 host01
+127.0.0.1 host01
+127.0.0.1 host01
+127.0.0.1 minikube
+127.0.0.1       host.minikube.internal
+172.17.0.63     control-plane.minikube.internal
+172.17.0.63 kubia.example.com
+```
 **通过Ingress访问pod**
 ```
-curl http://kubia.example.com
+$ curl http://kubia.example.com
+You've hit kubia-v4qx6
+$ curl http://kubia.example.com
+You've hit kubia-wnxg2
+$ curl http://kubia.example.com
+You've hit kubia-mszkm
+$ curl http://kubia.example.com
+You've hit kubia-mszkm
+$ curl http://kubia.example.com
+You've hit kubia-v4qx6
 ```
+**了解ingress的工作原理**
+1. 客户端向DNS查询kubia.example.com,我们的实验中是从/etc/hosts中完成查询。这里返回了Ingress控制器的ip
+2. 然后客户端向ingress控制器发送http请求，并在host中指定kubia.example.com,控制器从头发决定客户端尝试访问那个服务，通过与该服务关联的Endpoint对象查看pod ip
+3. 然后将客户端请求转发给其中一个pod
+所以ingress不会将请求转发给服务，而是用服务来选择一个Pod。
+### 5.4.3 通过相同的Ingress暴露多个服务
+**将不同的服务映射到相同主机不同路径**
+```
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: kubia-multi-paths
+spec:
+  rules:
+  - host: kubia.example.com
+    http:
+      paths:
+      - path: /kubia
+        backend:
+          serviceName: kubia
+          servicePort: 80
+      - path: /foo
+        backend:
+          serviceName: foo
+          servicePort: 80
+```
+**将不同的服务映射到不同的主机上**
+```
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: kubia-multi-hosts
+spec:
+  rules:
+  - host: foo.example.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: foo
+          servicePort: 80
+  - host: bar.example.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: bar
+          servicePort: 80
+```
+### 5.4.4 配置Ingress处理TLS传输
+创建私钥
+```
+$ openssl genrsa -out tls.key 2048
+Generating RSA private key, 2048 bit long modulus (2 primes)
+.........................+++++
+...........+++++
+e is 65537 (0x010001)
+```
+创建证书
+```
+openssl req -new -x509 -key tls.key -out tls.cert -days 360 -subj /CN=kubia.example.com
+```
+创建k8s secret资源
+```
+$ kubectl create secret tls tls-secret --cert=tls.cert --key=tls.key
+secret/tls-secret created
+```
+创建带tls的ingress
+kubia-ingress-tls.yaml
+```
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: kubia
+spec:
+  tls:
+  - hosts:
+    - kubia.example.com
+    secretName: tls-secret
+  rules:
+  - host: kubia.example.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: kubia-nodeport
+          servicePort: 80
+```
+可以通过下面命令来更新资源，而不是重建
+```
+kubectl apply -f kubia-ingress-tls.yaml
+```
+通过https访问pod
+```
+$ curl -k -v https://kubia.example.com
+* Rebuilt URL to: https://kubia.example.com/
+*   Trying 172.17.0.24...
+* TCP_NODELAY set
+* Connected to kubia.example.com (172.17.0.24) port 443 (#0)
+* ALPN, offering h2
+* ALPN, offering http/1.1
+* successfully set certificate verify locations:
+*   CAfile: /etc/ssl/certs/ca-certificates.crt
+  CApath: /etc/ssl/certs
+* TLSv1.3 (OUT), TLS handshake, Client hello (1):
+* TLSv1.3 (IN), TLS handshake, Server hello (2):
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, Unknown (8):
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, Certificate (11):
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, CERT verify (15):
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+* TLSv1.3 (OUT), TLS change cipher, Client hello (1):
+* TLSv1.3 (OUT), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (OUT), TLS handshake, Finished (20):
+* SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+* ALPN, server accepted to use h2
+* Server certificate:
+*  subject: CN=kubia.example.com
+*  start date: Oct  5 00:38:46 2021 GMT
+*  expire date: Sep 30 00:38:46 2022 GMT
+*  issuer: CN=kubia.example.com
+*  SSL certificate verify result: self signed certificate (18), continuing anyway.
+* Using HTTP2, server supports multi-use
+* Connection state changed (HTTP/2 confirmed)
+* Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+* TLSv1.3 (OUT), TLS Unknown, Unknown (23):
+* TLSv1.3 (OUT), TLS Unknown, Unknown (23):
+* TLSv1.3 (OUT), TLS Unknown, Unknown (23):
+* Using Stream ID: 1 (easy handle 0x55ea86f4a580)
+* TLSv1.3 (OUT), TLS Unknown, Unknown (23):
+> GET / HTTP/2
+> Host: kubia.example.com
+> User-Agent: curl/7.58.0
+> Accept: */*
+> 
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+* TLSv1.3 (IN), TLS Unknown, Certificate Status (22):
+* TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+* TLSv1.3 (IN), TLS Unknown, Unknown (23):
+* Connection state changed (MAX_CONCURRENT_STREAMS updated)!
+* TLSv1.3 (OUT), TLS Unknown, Unknown (23):
+* TLSv1.3 (IN), TLS Unknown, Unknown (23):
+< HTTP/2 200 
+< date: Tue, 05 Oct 2021 00:57:25 GMT
+< 
+You've hit kubia-d4s2f
+* TLSv1.3 (IN), TLS Unknown, Unknown (23):
+* Connection #0 to host kubia.example.com left intact
+```
+## 5.5 pod就绪发出信号
+有些pod服务已经就绪了，有些pod服务还在启动，如何保证流量
+### 5.5.1 介绍就绪探针
+之前介绍的是存活探针，现在看看就绪探针，他们非常类似。
+所谓就绪这个概念其实应该是开发人员自己去判定，因为每一个应用程序的具体情况都是不一样的，k8s只能检查容器中运行的应用程序是否能响应一个简单的get请求。
+**就绪探针的类型**
+像存活探针一样，就绪探针有三种类型
+- exec探针，执行进程的地方，容器的状态由进程的退出状态代码确定
+- Http get探针，向容器发送http get请求，通过响应的http代码判断容器是否准备好
+- tcp socket探针，它打开一个tcp连接到容器的指定端口，如果连接已建立，则认为容器已经准备就绪。
+**了解就绪探针的操作**
+容器启动时，可以为k8s配置一个等待时间，经过等待时间后才可以执行第一次准备就绪检查。之后他会周期性的调用探针。如果某个pod报告它尚未准备就绪，则会从该服务中删除该pod,如果再次就绪，则会添加该pod。
+与存活探针不同的是。存活探针检查为通过，pod会被终止或重启。就绪探针检查未通过他只是不接受流量。
+**了解就绪探针的重要性**
+如果一组pod，他前端的pod访问不了数据库了，那么这个pod肯定就不是就绪状态。但是其它能连接数据库的前端pod会是就就绪状态。就绪探针保证的是客户端只与正常的pod交互。
+### 5.5.2 向pod添加就绪探针
+**向pod tempplate添加就绪探针**
+可以根据已经存在的rc修改就绪探针
+```
+kubetcl edit rc kubia
+```
+我们这个根据下面的模板，建立带就绪探针的rc
+kubia-rc-readinessprobe.yaml
+readinessProbe下面描述一个行为，他是exec类的就绪探针，用ls命令检查下面是否有/var/ready路径，作为就绪标志
+```
+apiVersion: v1
+kind: ReplicationController
+metadata:
+  name: kubia
+spec:
+  replicas: 3
+  selector:
+    app: kubia
+  template:
+    metadata:
+      labels:
+        app: kubia
+    spec:
+      containers:
+      - name: kubia
+        image: scorpionchenlin/kubia
+        readinessProbe:
+          exec:
+            command:
+            - ls
+            - /var/ready
+        ports:
+        - containerPort: 8080
+```
+如果已经有pod了，那么新的rc template是不会影响现存的pod的，需要kill掉pod。
+查看现在的pod都不是就绪状态，因为没有/var/ready目录
+```
+NAME          READY   STATUS    RESTARTS   AGE
+kubia-gdx4w   0/1     Running   0          103s
+kubia-h7gc9   0/1     Running   0          103s
+kubia-k8zsf   0/1     Running   0          103s
+```
+利用exec命令为pod kubia-gdx4w创建一个/var/ready
+```
+kubectl exec -it kubia-gdx4w -- bash
+root@kubia-gdx4w:/# touch /var/ready
+root@kubia-gdx4w:/# exit
+exit
+```
+查看pod状态,刚才修改的pod:kubia-gdx4w，已经在就绪状态
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl get po
+NAME          READY   STATUS    RESTARTS   AGE
+kubia-gdx4w   1/1     Running   0          6m59s
+kubia-h7gc9   0/1     Running   0          6m59s
+kubia-k8zsf   0/1     Running   0          6m59s
+```
+可以使用describe命令查询Readiness设置，他10秒为周期检查/var/ready是否就绪
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl describe po kubia-gdx4w | grep Readiness
+    Readiness:      exec [ls /var/ready] delay=0s timeout=1s period=10s #success=1 #failure=3
+  Warning  Unhealthy  4m16s (x35 over 9m8s)  kubelet            Readiness probe failed: ls: cannot access /var/ready: No such file or directory
+```
+### 5.5.3 了解就绪探针的实际作用
+**务必定义就绪探针**
+如果没有就绪探针添加到pod，他们几乎会立即成为服务端点。
 
+## 5.6 使用headless服务来发现独立的pod
+有时候我们在客户端访问一个pod不想通过service集群的ip来访问，而是获取这个pod的ip。那么我们可以考虑将service的spec中的clusterIP=None来设置这个服务下面的pod都是headless的服务。
+当然我们也可以使用k8s api服务获取pod的ip.这是k8s的默认方式。但是如果我们不想把自己的应用和k8s绑定起来，我们就可以采用headless的方式。
+### 5.6.1 创建headless服务
+kubia-svc-headless.yaml
+```
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubia-headless
+spec:
+  clusterIP: None
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: kubia
+```
+```
+kubectl create -f kubia-svc-headless.yaml
+```
+可以看到这是一个没有Cluster-ip的服务
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl get svc
+NAME             TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes       ClusterIP   10.96.0.1    <none>        443/TCP   10d
+kubia-headless   ClusterIP   None         <none>        80/TCP    42s
+```
+将kubia-h7gc9添加为就绪
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl exec kubia-h7gc9 -- touch /var/ready
+[@ZDMdeMacBook-Pro:5]$ kubectl get po --show-labels
+NAME          READY   STATUS    RESTARTS   AGE   LABELS
+kubia-gdx4w   1/1     Running   0          47m   app=kubia
+kubia-h7gc9   1/1     Running   0          47m   app=kubia
+kubia-k8zsf   0/1     Running   0          47m   app=kubia
+```
+### 5.6.2 通过DNS发现POD
+准备好两个pod之后，我们可以同时尝试DNS查找以查看是否获得了实际的pod ip。需要在从其中一个pod执行查找，但是kubia的镜像中不包含nslookup的二进制文件。
+那么我们现在就是想在k8s集群中运行一个包含nslookup的新pod。tutum/dnsutils容器镜像可以帮助我们
+**不通过yaml文件运行pod**
+--generator=run-pod/v1表示使用kubectl直接创建pod而不通过rc之类的资源类来创建
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl run dnsutils --image=tutum/dnsutils --generator=run-pod/v1 --command -- sleep infinity
+Flag --generator has been deprecated, has no effect and will be removed in the future.
+pod/dnsutils created
+```
+登录dnsutils容器，查看kubia-headless服务下的所有pod
+```
+[@ZDMdeMacBook-Pro:5]$ kubectl exec -it dnsutils -- bash
+root@dnsutils:/# nslookup kubia-headless
+Server:		10.96.0.10
+Address:	10.96.0.10#53
 
-
-
+Name:	kubia-headless.default.svc.cluster.local
+Address: 172.17.0.7
+Name:	kubia-headless.default.svc.cluster.local
+Address: 172.17.0.8
+```
+但是我登录其中一台服务，无法使用curl http://172.17.0.7 访问到服务,不太明白这是为什么
+## 5.7 排除服务故障
+- 如果无法通过服务访问pod，应该根据以下列表进行排查：
+- 首先确保从群集内连接到服务的集群IP。（排除防火墙的干扰）
+- 不要通过ping服务IP来判断服务是否可以访问。（服务的IP是虚拟IP）
+- 如果定义了就绪探针，确保就绪探针工作正常。
+- 使用k get ep来检查某个特定容器是否在服务的作用域内。
+- 如果用FQDN访问不了，则尝试用集群IP来访问服务。
+- 确保连接的是服务公开的端口，而不是目标端口。
+- 尝试直连pod的IP确认pod端口配置是否正确。
+- 如果无法通过pod的IP访问，需要排除应用不是仅绑定到localhost域名或127.0.0.1。
