@@ -3,7 +3,7 @@
 windows10没有安装wsl，公司网络不让访问微软的wsl网站
 ## 解决方案
 禁用wsl，用Hyper-V启动
-C:\Users\chenli2\AppData\Roaming\Docker\settings.json
+C:\Users\user\AppData\Roaming\Docker\settings.json
 修改wslEngineEnabled to false
 
 # Error response from daemon: Get https://registry-1.docker.io/v2/: dial tcp: lookup registry-1.docker.io on 192.168.65.1:53: no such host
@@ -40,11 +40,11 @@ X Exiting due to MK_ADDON_ENABLE: run callbacks: running callbacks: [waiting for
 │                                                                                                                │
 │    * Please run `minikube logs --file=logs.txt` and attach logs.txt to the GitHub issue.                       │
 │    * Please also attach the following file to the GitHub issue:                                                │
-│    * - C:\Users\chenli2\AppData\Local\Temp\2\minikube_addons_e0e7a0581240141c35e4e8309b248d753611d39a_0.log    │
+│    * - C:\Users\user\AppData\Local\Temp\2\minikube_addons_e0e7a0581240141c35e4e8309b248d753611d39a_0.log    │
 │                                                                                                                │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
-根据C:\Users\chenli2\AppData\Local\Temp\2\minikube_addons_e0e7a0581240141c35e4e8309b248d753611d39a_0.log  
+根据C:\Users\user\AppData\Local\Temp\2\minikube_addons_e0e7a0581240141c35e4e8309b248d753611d39a_0.log  
 log长这样
 ```
 Log file created at: 2021/09/29 17:22:45
@@ -55,7 +55,7 @@ I0929 17:22:45.426981   16808 out.go:298] Setting OutFile to fd 92 ...
 I0929 17:22:45.430565   16808 out.go:345] TERM=,COLORTERM=, which probably does not support color
 I0929 17:22:45.430565   16808 out.go:311] Setting ErrFile to fd 96...
 I0929 17:22:45.430565   16808 out.go:345] TERM=,COLORTERM=, which probably does not support color
-W0929 17:22:45.461158   16808 root.go:291] Error reading config file at C:\Users\chenli2\.minikube\config\config.json: open C:\Users\chenli2\.minikube\config\config.json: The system cannot find the file specified.
+W0929 17:22:45.461158   16808 root.go:291] Error reading config file at C:\Users\user\.minikube\config\config.json: open C:\Users\user\.minikube\config\config.json: The system cannot find the file specified.
 I0929 17:22:45.464741   16808 config.go:177] Loaded profile config "minikube": Driver=docker, ContainerRuntime=docker, KubernetesVersion=v1.22.1
 I0929 17:22:45.465552   16808 addons.go:65] Setting ingress=true in profile "minikube"
 I0929 17:22:45.466156   16808 addons.go:153] Setting addon ingress=true in "minikube"
@@ -70,7 +70,7 @@ I0929 17:22:47.017401   16808 addons.go:337] installing /etc/kubernetes/addons/i
 I0929 17:22:47.017503   16808 ssh_runner.go:319] scp memory --> /etc/kubernetes/addons/ingress-deploy.yaml (17010 bytes)
 I0929 17:22:47.028937   16808 cli_runner.go:115] Run: docker container inspect -f "'{{(index (index .NetworkSettings.Ports "22/tcp") 0).HostPort}}'" minikube
 I0929 17:22:48.577133   16808 cli_runner.go:168] Completed: docker container inspect -f "'{{(index (index .NetworkSettings.Ports "22/tcp") 0).HostPort}}'" minikube: (1.5481696s)
-I0929 17:22:48.578276   16808 sshutil.go:53] new ssh client: &{IP:127.0.0.1 Port:54933 SSHKeyPath:C:\Users\chenli2\.minikube\machines\minikube\id_rsa Username:docker}
+I0929 17:22:48.578276   16808 sshutil.go:53] new ssh client: &{IP:127.0.0.1 Port:54933 SSHKeyPath:C:\Users\user\.minikube\machines\minikube\id_rsa Username:docker}
 I0929 17:22:48.691304   16808 ssh_runner.go:152] Run: sudo KUBECONFIG=/var/lib/minikube/kubeconfig /var/lib/minikube/binaries/v1.22.1/kubectl apply -f /etc/kubernetes/addons/ingress-deploy.yaml
 I0929 17:22:49.396405   16808 addons.go:375] Verifying addon ingress=true in "minikube"
 I0929 17:22:49.398000   16808 out.go:177] * Verifying ingress addon...
@@ -148,5 +148,5 @@ docker volume create --name=mongodata
 docker run -d -p 27017:27017 -v mongodata:/data/db --name=container-mongodb mongo
 ```
 参考文档
-https://stackoverflow.com/questions/61147270/docker-compose-and-mongodb-failed-to-start-up-wiredtiger-under-any-compatibilit/69505759#69505759
-https://dba.stackexchange.com/questions/186478/mongodb-refuse-to-start-operation-not-permitted
+(stack overflow)[https://stackoverflow.com/questions/61147270/docker-compose-and-mongodb-failed-to-start-up-wiredtiger-under-any-compatibilit/69505759#69505759]
+(stack exchange)[https://dba.stackexchange.com/questions/186478/mongodb-refuse-to-start-operation-not-permitted]
