@@ -149,4 +149,5 @@ docker run -d -p 27017:27017 -v mongodata:/data/db --name=container-mongodb mong
 ```
 参考文档
 [stack overflow](https://stackoverflow.com/questions/61147270/docker-compose-and-mongodb-failed-to-start-up-wiredtiger-under-any-compatibilit/69505759#69505759)
+
 [stack exchange](https://dba.stackexchange.com/questions/186478/mongodb-refuse-to-start-operation-not-permitted)
