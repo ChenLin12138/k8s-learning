@@ -215,4 +215,24 @@ NAME      READY   STATUS    RESTARTS   AGE
 mongodb   1/1     Running   0          16h
 ```
 
+# found character that cannot start any token
+## root cause
+[@ZDMdeMacBook-Pro:3]$ kubectl create -f kubia-manual-with-labels.yaml
+error: error parsing kubia-manual-with-labels.yaml: error converting YAML to JSON: yaml: line 6: found character that cannot start any token
+## 解决方案
+不要在yaml中使用tab
 
+# kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+
+```
+kubectl exec -it fortune-configmap-volume -c html-generator bash
+kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+```
+
+## root cause
+就是格式不支持了而已，请修改成下面的样子
+```
+kubectl exec -it fortune-configmap-volume -c html-generator -- bash
+root@fortune-configmap-volume:/# exit
+exit
+```
