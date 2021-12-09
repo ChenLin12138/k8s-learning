@@ -396,15 +396,24 @@ spec:
 下面包含以下2个文件
 my-nginx-config.conf 和 sleep-interval 
 
+下面的配置表示ngix会压缩传递给客户端的响应
 my-nginx-config.conf
 ```
+# server其实是内嵌到http块中的，协议级别配置
+# 服务级别配置，一个http中可以有多个server。
 server {
+    # 监听端口
     listen              80;
+    # 监听地址
     server_name         www.kubia-example.com;
-
+    
+    # 开启gzip压缩
     gzip on;
+    
+    # 设置压缩类型
     gzip_types text/plain application/xml;
 
+    # 请求级别配置
     location / {
         root   /usr/share/nginx/html;
         index  index.html index.htm;
@@ -425,6 +434,7 @@ kubectl create configmap fortune-config --from-file=configmap-files
 查询从文件创建的configmap的yaml格式定义
 可以看出下面有两个条目:my-nginx-config.conf和sleep-interval
 条目的键名和文件名相同，接下来我们准备在pod的容器中，使用该ConfigMap
+命令中-o 表示output, yaml表示输出格式
 ```
 kubectl get configmap fortune-config -o yaml
 apiVersion: v1
@@ -444,15 +454,240 @@ metadata:
 ```
 
 **在卷内使用ConfigMap的条目**
+fortune-pod-configmap-volume.yaml
+这个yaml文件指定在pod中创建2个contrainer: html-generator和web-server，并且指定web-server的config来自于configMap，并且绑定到/etc/nginx/conf.d下面
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fortune-configmap-volume
+spec:
+  containers:
+  - image: luksa/fortune:env
+    env:
+    - name: INTERVAL
+      valueFrom:
+        configMapKeyRef:
+          name: fortune-config
+          key: sleep-interval
+    name: html-generator
+    volumeMounts:
+    - name: html
+      mountPath: /var/htdocs
+  - image: nginx:alpine
+    name: web-server
+    volumeMounts:
+    - name: html
+      mountPath: /usr/share/nginx/html
+      readOnly: true
+    - name: config
+      mountPath: /etc/nginx/conf.d
+      readOnly: true
+    - name: config
+      mountPath: /tmp/whole-fortune-config-volume
+      readOnly: true
+    ports:
+      - containerPort: 80
+        name: http
+        protocol: TCP
+  volumes:
+  - name: html
+    emptyDir: {}
+  - name: config
+    configMap:
+      name: fortune-config
+```
+**检查Nginx是否使用被挂载的配置文件**
+```
+kubectl port-forward fortune-configmap-volume 8080:80 &
+[1] 10117
+Forwarding from 127.0.0.1:8080 -> 80
+Forwarding from [::1]:8080 -> 80
+Handling connection for 8080
+```
+查看挂载内容
+```
+curl -H "Accept-Encoding: gzip" -I localhost:8080
+HTTP/1.1 200 OK
+Server: nginx/1.21.4
+Date: Sun, 05 Dec 2021 07:52:56 GMT
+Content-Type: text/html
+Last-Modified: Sun, 05 Dec 2021 07:52:54 GMT
+Connection: keep-alive
+ETag: W/"61ac6fd6-dc"
+Content-Encoding: gzip
+```
 
+因为pod fortune-configmap-volume 中其实是有2个应用的，而且这两个应用分别运行在不同的容器中。
+两个容器为：
+html-generator
+web-server
+在定义的时候，我们是先定义html-generator的，所以在用kubectl exec -it的时候,我们想看web-server的内容，我们需要用-c 来指定容器。下面命令我可以看到绑定成功了。
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- ls /etc/nginx/conf.d
+my-nginx-config.conf  sleep-interval
+```
 
+对于下面不能用--bash登录web-server的情况，我们可以考虑使用：/bin/sh来代替
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- bash
+OCI runtime exec failed: exec failed: container_linux.go:380: starting container process caused: exec: "bash": executable file not found in $PATH: unknown
+command terminated with exit code 126
+```
+/bin/sh的处理方式
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- /bin/sh
+/ # cd /etc/nginx
+/etc/nginx # cd conf.d
+/etc/nginx/conf.d # ls -l
+total 0
+lrwxrwxrwx    1 root     root            27 Dec  5 07:48 my-nginx-config.conf -> ..data/my-nginx-config.conf
+lrwxrwxrwx    1 root     root            21 Dec  5 07:48 sleep-interval -> ..data/sleep-interval
+```
+**卷内暴露指定的ConfigMap条目**
+上面的内容暴露了configmap中所有的条目，其实我们是有办法只暴露configMap卷中部分的条目
+fortune-pod-configmap-volume-with-items.yaml
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fortune-configmap-volume-with-items
+spec:
+  containers:
+  - image: luksa/fortune:env
+    name: html-generator
+    volumeMounts:
+    - name: html
+      mountPath: /var/htdocs
+  - image: nginx:alpine
+    name: web-server
+    volumeMounts:
+    - name: html
+      mountPath: /usr/share/nginx/html
+      readOnly: true
+    - name: config
+      mountPath: /etc/nginx/conf.d/
+      readOnly: true
+    ports:
+    - containerPort: 80
+      protocol: TCP
+  volumes:
+  - name: html
+    emptyDir: {}
+  - name: config
+    configMap:
+      name: fortune-config
+      #选择包含在卷中的条目
+      items:
+      #下列key对应的条目被包含
+      - key: my-nginx-config.conf
+        #条目的值存储在该文件中
+        path: gzip.conf
+```
+path: gzip.conf表达条目的值存储在gzip.conf中
 
+```
+k exec fortune-configmap-volume-with-items -it -c web-server -- cat /etc/nginx/conf.d/gzip.conf
+# server其实是内嵌到http块中的，协议级别配置
+# 服务级别配置，一个http中可以有多个server。
+server {
+    # 监听端口
+    listen              80;
+    # 监听地址
+    server_name         www.kubia-example.com;
 
+    # 开启gzip压缩
+    gzip on;
 
+    # 设置压缩类型
+    gzip_types text/plain application/xml;
 
+    # 请求级别配置
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+}
+```
 
+**挂载某一文件夹会隐藏该文件夹中已存在的文件**
+刚才的例子，我们将path: gzip.conf挂载到/etc/nginx/conf.d/下面，本质上gzip.conf会替换原来/etc/nginx/conf.d/下的所有文件。Linux系统挂载文件至非空文件夹的表现都是这样。所以在挂载文件到/etc这样重要的文件夹下面，要特别注意这个问题
 
+**configMap独立条目作为文件被挂载且不隐藏文件夹中的其他文件**
+使用subPath可以解决上面提及的问题
+```
+spec:
+  containers:
+  - image: nginx:alpine
+    name: web-server
+    volumeMounts:
+    - name: config
+      mountPath: /etc/someconfig.conf
+      subPath: myconfig.conf
+```
 
+**为configMap卷中的文件设置权限**
+fortune-pod-configmap-volume-defaultMode.yaml
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fortune-configmap-volume
+spec:
+  containers:
+  - image: luksa/fortune:env
+    env:
+    - name: INTERVAL
+      valueFrom:
+        configMapKeyRef:
+          name: fortune-config
+          key: sleep-interval
+    name: html-generator
+    volumeMounts:
+    - name: html
+      mountPath: /var/htdocs
+  - image: nginx:alpine
+    name: web-server
+    volumeMounts:
+    - name: html
+      mountPath: /usr/share/nginx/html
+      readOnly: true
+    - name: config
+      mountPath: /etc/nginx/conf.d
+      readOnly: true
+    - name: config
+      mountPath: /tmp/whole-fortune-config-volume
+      readOnly: true
+  volumes:
+  - name: html
+    emptyDir: {}
+  - name: config
+    configMap:
+      name: fortune-config
+      #为fortune-config设置权限
+      defaultMode: 493
+```
+这里需要注意,因为json中不能表示8进制，其实这个493对应的8进制的755，那么755对应的linux权限为:
+lrwxr-xr-x.
+
+接下来我们查看my-nginx-config.conf文件的权限
+```
+k exec fortune-configmap-volume -it -c web-server -- /bin/sh
+/ # cd /etc/nginx/conf.d
+/etc/nginx/conf.d # ls -l
+total 0
+lrwxrwxrwx    1 root     root            27 Dec  9 07:41 my-nginx-config.conf -> ..data/my-nginx-config.conf
+lrwxrwxrwx    1 root     root            21 Dec  9 07:41 sleep-interval -> ..data/sleep-interval
+/etc/nginx/conf.d # cd /etc/nginx/conf.d/..data
+/etc/nginx/conf.d/..2021_12_09_07_41_17.465373878 # pwd
+/etc/nginx/conf.d/..data
+/etc/nginx/conf.d/..2021_12_09_07_41_17.465373878 # ls -l
+total 8
+-rwxr-xr-x    1 root     root           484 Dec  9 07:41 my-nginx-config.conf
+-rwxr-xr-x    1 root     root             3 Dec  9 07:41 sleep-interval
+```
+
+### 7.4.7 更新应用配合且不重启应用程序
 
 
 
