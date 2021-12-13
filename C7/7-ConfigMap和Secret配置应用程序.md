@@ -688,18 +688,442 @@ total 8
 ```
 
 ### 7.4.7 更新应用配合且不重启应用程序
+使用环境变量或者命令行参数作为配置源的弊端在于无法在进程运行的时候进行更新。将ConfigMap暴露为卷则可以达到配置热更新的效果。无需重新创建pod或者启动容器。
+
+先查看以前的配置，这里使用的是gzip on
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- cat /etc/nginx/conf.d/my-nginx-config.conf
+server {
+    listen              80;
+    server_name         www.kubia-example.com;
+
+    gzip on;
+    gzip_types text/plain application/xml;
+
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+
+}
+```
+使用下面命令编辑configmap，完成gzip on 修改为gzip off
+```
+kubectl edit configmap fortune-config
+configmap/fortune-config edited
+```
+再次查看发现并没有生效。
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- cat /etc/nginx/conf.d/my-nginx-config.conf
+server {
+    listen              80;
+    server_name         www.kubia-example.com;
+
+    gzip on;
+    gzip_types text/plain application/xml;
+
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+
+}
+```
+这里需要reload一下nginx
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- nginx -s reload
+2021/12/13 03:17:27 [notice] 97#97: signal process started
+```
+再次查看，发现生效，现在修改为gzip off
+···
+kubectl exec -it fortune-configmap-volume -c web-server -- cat /etc/nginx/conf.d/my-nginx-config.conf
+server {
+    listen              80;
+    server_name         www.kubia-example.com;
+
+    gzip off;
+    gzip_types text/plain application/xml;
+
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+
+}
+···
+
+**了解文件被自动更新的过程**
+可以看到他这边实际上做了一个junction的东西。之前的配置都在..2021_12_13_03_17_00.880589937这个软连接中。现在替换为..2021_12_13_03_17_00.880589937
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- ls -lA /etc/nginx/conf.d
+total 4
+drwxr-xr-x    2 root     root          4096 Dec 13 03:17 ..2021_12_13_03_17_00.880589937
+lrwxrwxrwx    1 root     root            31 Dec 13 03:17 ..data -> ..2021_12_13_03_17_00.880589937
+lrwxrwxrwx    1 root     root            27 Dec  3 09:11 my-nginx-config.conf -> ..data/my-nginx-config.conf
+lrwxrwxrwx    1 root     root            21 Dec  3 09:11 sleep-interval -> ..data/sleep-interval
+
+```
+每次更新后会重新挂载新的软连接
+```
+kubectl exec -it fortune-configmap-volume -c web-server -- ls -lA /etc/nginx/conf.d
+total 4
+drwxr-xr-x    2 root     root          4096 Dec 13 05:26 ..2021_12_13_05_26_22.797698573
+lrwxrwxrwx    1 root     root            31 Dec 13 05:26 ..data -> ..2021_12_13_05_26_22.797698573
+lrwxrwxrwx    1 root     root            27 Dec  3 09:11 my-nginx-config.conf -> ..data/my-nginx-config.conf
+lrwxrwxrwx    1 root     root            21 Dec  3 09:11 sleep-interval -> ..data/sleep-interval
+```
+
+**挂载至已存在文件夹的文件不会被更新**
+如果挂载的文件是容器中的单个文件而不是整个卷，ConfigMap更新之后对应的文件不会被更新。如果想修改单个文件同时自动修改这个文件，一种方案是挂载完整卷到不同的文件夹并创建指向所需文件的符号连接。
+符号链接可以原生创建在容器镜像中，可以在容器启动时创建。
+
+## 7.5 使用Secret给容器传递敏感数据
+现在我们来尝试传递一些敏感数据
+
+### 7.5.1 
+Secret是一种敏感资源。使用方式和ConfigMap非常类似。
+- 将Secret条目作为环境变量传递给容器
+- 将Secret条目暴露为卷中的文件
+k8s通过仅仅将Secret分发到需要访问的Secret的pod所在的机器节点来保证安全性。另外Secret只会存储在节点的内存中，永不会写入物理存储。这样从节点上删除Secret时就不需要擦除磁盘了。
+
+### 7.5.2 默认令牌Secret介绍
+查询secrets
+```
+k get secrets
+NAME                  TYPE                                  DATA   AGE
+default-token-t5vzk   kubernetes.io/service-account-token   3      70d
+```
+
+查询secrets内容
+可以看到secrets包含3个条目
+ca.cet
+namespaces
+token
+```
+k describe secrets
+Name:         default-token-t5vzk
+Namespace:    default
+Labels:       <none>
+Annotations:  kubernetes.io/service-account.name: default
+              kubernetes.io/service-account.uid: 3784ea6e-f301-42d8-a6f9-fdd5a1f58ffc
+Type:  kubernetes.io/service-account-token
+Data
+====
+ca.crt:     1111 bytes
+namespace:  7 bytes
+token:      eyJhbGciOiJSUzI1NiIsImtpZCI6IkZ1WUNldE44NzlXR0J5VlN5eVdaLVhPaWJ3RXdlU3BDN2dQa3FVTzEtVHMifQ.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJkZWZhdWx0Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9zZWNyZXQubmFtZSI6ImRlZmF1bHQtdG9rZW4tdDV2emsiLCJrdWJlcm5ldGVzLmlvL3NlcnZpY2VhY2NvdW50L3NlcnZpY2UtYWNjb3VudC5uYW1lIjoiZGVmYXVsdCIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6IjM3ODRlYTZlLWYzMDEtNDJkOC1hNmY5LWZkZDVhMWY1OGZmYyIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDpkZWZhdWx0OmRlZmF1bHQifQ.XcNBwx3LXxK4ohfkkILXo6zryWd8F4hLzDIcXYvIM8Khp-_fQ9l9cvSfiVxgLA07qGHnchPMQcJWpaigh3qKtTIGIODNC_uZWOBFF-lwulbvFKmMUzChzCqdlW8zbehigqJaHsqulmxPj4VgyeH89S2Zfxf0T21XgFSIJznVd2D2EPjH-DD0Mo-hKmgro2mSi8gCJqtX251_a1F9ivNbukkXEcveelyFRO28Ej0WpxsGTI8YwA23jlmi9kI3pOmjPK2dOYfmz-ye719bViis_lsRIlfw_TbaVkshPaWQRGFgqLEXQRh549sPu60PZxtNsfOrNSJvRSYZ1x4WEYm0aw
+```
+可以发现下面每一个container中都使用到了secret
+```
+k describe pod
+Name:         fortune-configmap-volume
+Namespace:    default
+Priority:     0
+Node:         minikube/192.168.49.2
+Start Time:   Fri, 03 Dec 2021 17:11:14 +0800
+Labels:       <none>
+Annotations:  <none>
+Status:       Running
+IP:           172.17.0.4
+IPs:
+  IP:  172.17.0.4
+Containers:
+  html-generator:
+    Container ID:   docker://1c652dd2cbd14c8d7faed6227ae1aaa2efe2c9fad2e7ca0b501fc3fdfbbdf106
+    Image:          luksa/fortune:env
+    Image ID:       docker-pullable://luksa/fortune@sha256:8af10b8eb1b1dcc6512e0061c0722db43f4795aefcde43b524b1c8b302611dde
+    Port:           <none>
+    Host Port:      <none>
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:36 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:11:15 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  1
+    Environment:
+      INTERVAL:  <set to the key 'sleep-interval' of config map 'fortune-config'>  Optional: false
+    Mounts:
+      /var/htdocs from html (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-dbjsj (ro)
+  web-server:
+    Container ID:   docker://ef4c6d675e888e6060fa114cac89da2e7e37913cf5266a0f857b7594db6fbe30
+    Image:          nginx:alpine
+    Image ID:       docker-pullable://nginx@sha256:686aac2769fd6e7bab67663fd38750c135b72d993d0bb0a942ab02ef647fc9c3
+    Port:           80/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:36 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:11:15 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  1
+    Environment:    <none>
+    Mounts:
+      /etc/nginx/conf.d from config (ro)
+      /tmp/whole-fortune-config-volume from config (ro)
+      /usr/share/nginx/html from html (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-dbjsj (ro)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  html:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:  <unset>
+  config:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      fortune-config
+    Optional:  false
+  kube-api-access-dbjsj:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>
 
 
+Name:         fortune-env
+Namespace:    default
+Priority:     0
+Node:         minikube/192.168.49.2
+Start Time:   Fri, 03 Dec 2021 17:20:10 +0800
+Labels:       <none>
+Annotations:  <none>
+Status:       Running
+IP:           172.17.0.7
+IPs:
+  IP:  172.17.0.7
+Containers:
+  html-generator:
+    Container ID:   docker://bb1312062a81c9971fd8dc3ec21d5ea009589176e26e0d2efceccab69b17b934
+    Image:          luksa/fortune:env
+    Image ID:       docker-pullable://luksa/fortune@sha256:8af10b8eb1b1dcc6512e0061c0722db43f4795aefcde43b524b1c8b302611dde
+    Port:           <none>
+    Host Port:      <none>
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:36 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:20:10 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  1
+    Environment:
+      INTERVAL:  30
+    Mounts:
+      /var/htdocs from html (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kqg8g (ro)
+  web-server:
+    Container ID:   docker://9b008fa046feea56840d756266ba37b2662eb9e8b3ac405b74882a23da96156e
+    Image:          nginx:alpine
+    Image ID:       docker-pullable://nginx@sha256:686aac2769fd6e7bab67663fd38750c135b72d993d0bb0a942ab02ef647fc9c3
+    Port:           80/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:36 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:20:10 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  1
+    Environment:    <none>
+    Mounts:
+      /usr/share/nginx/html from html (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-kqg8g (ro)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  html:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:
+    SizeLimit:  <unset>
+  kube-api-access-kqg8g:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>
 
 
+Name:         fortune-env-from-configmap
+Namespace:    default
+Priority:     0
+Node:         minikube/192.168.49.2
+Start Time:   Fri, 26 Nov 2021 16:59:41 +0800
+Labels:       <none>
+Annotations:  <none>
+Status:       Running
+IP:           172.17.0.3
+IPs:
+  IP:  172.17.0.3
+Containers:
+  html-generator:
+    Container ID:   docker://25f172e37389dbd6d0280e8d64856a8d1374a671d37cdde44ffe7e8caa5d2484
+    Image:          luksa/fortune:env
+    Image ID:       docker-pullable://luksa/fortune@sha256:8af10b8eb1b1dcc6512e0061c0722db43f4795aefcde43b524b1c8b302611dde
+    Port:           <none>
+    Host Port:      <none>
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:35 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:01:27 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  5
+    Environment:
+      INTERVAL:  <set to the key 'sleep-interval' of config map 'fortune-config'>  Optional: false
+    Mounts:
+      /var/htdocs from html (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ghj52 (ro)
+  web-server:
+    Container ID:   docker://d2b837e1b06362494cedb6d57cf80b5aa6f06417a669f28574d0d717a92121ec
+    Image:          library/nginx:alpine
+    Image ID:       docker-pullable://nginx@sha256:686aac2769fd6e7bab67663fd38750c135b72d993d0bb0a942ab02ef647fc9c3
+    Port:           80/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:35 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:01:27 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  5
+    Environment:    <none>
+    Mounts:
+      /usr/share/nginx/html from html (ro)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-ghj52 (ro)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  html:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     Memory
+    SizeLimit:  <unset>
+  kube-api-access-ghj52:
+    Type:                    Projected (a volume that contains injected data from multiple sources)
+    TokenExpirationSeconds:  3607
+    ConfigMapName:           kube-root-ca.crt
+    ConfigMapOptional:       <nil>
+    DownwardAPI:             true
+QoS Class:                   BestEffort
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                      <none>
+```
+我们接下来取一个Container来观察，我们用html-generator作为例子
+```
+  html-generator:
+    Container ID:   docker://1c652dd2cbd14c8d7faed6227ae1aaa2efe2c9fad2e7ca0b501fc3fdfbbdf106
+    Image:          luksa/fortune:env
+    Image ID:       docker-pullable://luksa/fortune@sha256:8af10b8eb1b1dcc6512e0061c0722db43f4795aefcde43b524b1c8b302611dde
+    Port:           <none>
+    Host Port:      <none>
+    State:          Running
+      Started:      Mon, 13 Dec 2021 10:51:36 +0800
+    Last State:     Terminated
+      Reason:       Error
+      Exit Code:    255
+      Started:      Fri, 03 Dec 2021 17:11:15 +0800
+      Finished:     Mon, 13 Dec 2021 10:50:57 +0800
+    Ready:          True
+    Restart Count:  1
+    Environment:
+      INTERVAL:  <set to the key 'sleep-interval' of config map 'fortune-config'>  Optional: false
+    Mounts:
+      /var/htdocs from html (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-dbjsj (ro)
+```
 
+```
+k exec -it fortune-env-from-configmap -c html-generator -- ls -l /var/run/secrets/kubernetes.io/serviceaccount
+total 0
+lrwxrwxrwx 1 root root 13 Dec 13 02:51 ca.crt -> ..data/ca.crt
+lrwxrwxrwx 1 root root 16 Dec 13 02:51 namespace -> ..data/namespace
+lrwxrwxrwx 1 root root 12 Dec 13 02:51 token -> ..data/token
+```
 
+### 7.5.3 创建Secret
+现在我们想创建自己地小型Secret，改进fortune-serving的Nginx容器的配置。使得它能服务于https色流量，我们创建私钥和证书，由于需要保证私钥的安全性，可以将其与证书同时存入Secret
+首先在本地机器上生成证书与私钥文件，当然也可以世界使用本书代码文档中的相应文件。
+创建一个generic类型的secret，来自于文件夹fortune-https
+```
+k create secret generic fortune-https --from-file=fortune-https
+secret/fortune-https created
+```
+### 7.5.4 对比ConfigMap与Secret
+Secret与ConfigMap有比较大的区别。
+```
+k get secret fortune-https -o yaml
+C:\NotBackedUp\learn\k8s-learning-master\C7>k get secret fortune-https -o yaml
+apiVersion: v1
+data:
+  foo: YmFy
+  https.cert: CgoKCgoKPCFET0NUWVBFIGh0bWw+CjxodG1sIGxhbmc9ImVuIiBkYXRhLWNvbG9yLW1vZGU9ImF1dG8iIGRhdGEtbGlnaHQtdGhlbWU9ImxpZ2h0IiBkYXRhLWRhcmstdGhlbWU9ImRhcmsiPgogIDxoZWFkPgogICAgPG1ldGEgY2hhcnNldD0idXRmLTgiPgogIDxsaW5rIHJlbD0iZG5zLXByZWZldGNoIiBocmVmPSJodHRwczovL2dpdGh1Yi5naXRodWJhc3NldHMuY29tIj4KICA8bGluayByZWw9ImRucy1wcmVmZXRjaCIgaHJlZj0iaHR0cHM6Ly9hdmF0YXJzLmdpdGh1YnVzZXJjb250ZW50LmNvbSI+CiAgPGxpbmsgcmVsPSJkbnMtcHJlZmV0Y2giIGhyZWY9Imh0dHBzOi8vZ2l0aHViLWNsb3VkLnMzLmFtYXpvbmF3cy5jb20iPgogIDxsaW5rIHJlb
+```
+可以看到的是secret条目内容以Bash64格式编码，而ConfigMap直接以纯文本展示。
+**以二进制数据创建Secret**
 
+### 7.5.5 在pod中使用Secret
+fortune-https Sercet已经包含了证书与密钥文件，接下来需要做的是配置Nginx服务器去使用它。
 
+**修改fortune-config ConfigMap以开启Https**
+创建一个名为configmap-ssl的文件夹
+将sleep-interval和ssl.conf放入其中
+fortune-config/my-nginx-config.conf
+```
+server {
+    listen              80;
+    listen              443 ssl;
+    server_name         www.kubia-example.com;
+    ssl_certificate     certs/https.cert;
+    ssl_certificate_key certs/https.key;
+    ssl_protocols       TLSv1 TLSv1.1 TLSv1.2;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
 
-
-
-
-
-
-
+    location / {
+        root   /usr/share/nginx/html;
+        index  index.html index.htm;
+    }
+}
+```
+重新创建带ssl的
+```
+k create configmap fortune-config --from-file=configmap-ssl
+configmap/fortune-config created
+``
