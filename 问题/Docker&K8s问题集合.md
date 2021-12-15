@@ -236,3 +236,43 @@ kubectl exec -it fortune-configmap-volume -c html-generator -- bash
 root@fortune-configmap-volume:/# exit
 exit
 ```
+
+# k8s pod 启动容器报错
+查询pod启动状态
+```
+k get po
+NAME                         READY   STATUS             RESTARTS       AGE
+fortune-configmap-volume     2/2     Running            2 (27h ago)    10d
+fortune-env                  2/2     Running            2 (27h ago)    10d
+fortune-env-from-configmap   2/2     Running            10 (27h ago)   17d
+fortune-https                0/1     CrashLoopBackOff   1 (2s ago)     3s
+```
+
+看看pod经历了什么，BackOff。大概能定位到是pod中哪个container启动的时候出了问题。如果pod中只有一个container，那么不需要这一步
+```
+k describe po fortune-https
+Events:
+  Type     Reason     Age               From               Message
+  ----     ------     ----              ----               -------
+  Normal   Scheduled  17s               default-scheduler  Successfully assigned default/fortune-https to minikube
+  Normal   Pulled     3s (x3 over 17s)  kubelet            Container image "nginx:alpine" already present on machine
+  Normal   Created    3s (x3 over 17s)  kubelet            Created container web-server
+  Normal   Started    2s (x3 over 17s)  kubelet            Started container web-server
+  Warning  BackOff    2s (x3 over 15s)  kubelet            Back-off restarting failed container
+```
+
+查询对应container的logs
+```
+k logs fortune-https
+/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+10-listen-on-ipv6-by-default.sh: info: /etc/nginx/conf.d/default.conf is not a file or does not exist
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+/docker-entrypoint.sh: Configuration complete; ready for start up
+2021/12/14 09:04:45 [emerg] 1#1: cannot load certificate "/etc/nginx/certs/https.cert": PEM_read_bio_X509_AUX() failed (SSL: error:0909006C:PEM routines:get_name:no start line:Expecting: TRUSTED CERTIFICATE)
+nginx: [emerg] cannot load certificate "/etc/nginx/certs/https.cert": PEM_read_bio_X509_AUX() failed (SSL: error:0909006C:PEM routines:get_name:no start line:Expecting: TRUSTED CERTIFICATE)
+```
+## root cause
+ssl的问题，我发现是我使用的ssl中的https.sert和https.key不对，我替换了这两个文件，重新生成secert就解决了
