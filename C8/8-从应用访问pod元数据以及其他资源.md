@@ -734,6 +734,148 @@ $ curl http://localhost:8001/apis/batch/v1/namespaces/default/jobs/ingress-nginx
 - 通过服务器的认证，否则将来不能查看任何内容以及进行任何操作
 
 **运行一个pod来尝试与API服务器进行通信**
+curl.yaml
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl
+spec:
+  containers:
+  - name: main
+    image: rancher/curl
+    command: ["sleep", "9999999"]
+```
+我们要明白以下事情，kubernetess API也是通过service暴露出来的，那么我们看看现在有哪些service暴露出来了，他的IP地址是10.96.0.1:443
+```
+$ k get svc
+NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   86d
+```
+容器中的env的KUBERNETES_SERVICE_HOST和KUBERNETES_SERVICE_PORT 和k8s API的是一致的
+```
+k exec -it curl -- /bin/sh
+/ # env | grep KUBERNETES_SERVICE
+KUBERNETES_SERVICE_PORT=443
+KUBERNETES_SERVICE_PORT_HTTPS=443
+KUBERNETES_SERVICE_HOST=10.96.0.1
+```
+
+**验证服务器身份**
+
+```
+k exec -it curl -- /bin/sh
+/var/run/secrets/kubernetes.io/serviceaccount # ls -l
+total 0
+lrwxrwxrwx    1 root     root            13 Dec 22 07:23 ca.crt -> ..data/ca.crt
+lrwxrwxrwx    1 root     root            16 Dec 22 07:23 namespace -> ..data/namespace
+lrwxrwxrwx    1 root     root            12 Dec 22 07:23 token -> ..data/token
+```
+
+通过添加--cacert参数访问https
+```
+/var/run/secrets/kubernetes.io/serviceaccount # curl --cacert /var/run/secrets/kubernetes.io/serviceaccount/ca.crt https://kubernetes
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {
+
+  },
+  "code": 403
+```
+
+导入证书
+```
+/var/run/secrets/kubernetes.io/serviceaccount # export CURL_CA_BUNDLE=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+```
+
+导入证书后，可以不使用--cacert来访问API服务器
+```
+/var/run/secrets/kubernetes.io/serviceaccount # curl https://kubernetes
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {
+
+  },
+  "code": 403
+```
+
+**获取API服务器授权**
+```
+TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+```
+
+为了解决403的问题，我们需要给所有的cluster-admin，这是关闭基于角色的访问控制(RBAL)
+```
+k create clusterrolebinding permissive-binding --clusterrole=cluster-admin --group=system:serviceaccounts
+clusterrolebinding.rbac.authorization.k8s.io/permissive-binding created
+```
+
+上面描述的问题cert解决ssl访问的问题，token解决授权的问题。
+但是我没搞定。我放弃了。
+
+**获取当前运行pod所在的命名空间**
+
+由于上面的没搞定，命名空间也凉了。
+
+### 8.2.3 通过ambassador容器进化与API服务器的交互
+**通过ambassador容器简化与api服务的交互**
+如果每一个容器与api交互都需要设置https的证书和token,那么事情变得非常的复杂。我们接下来想完成的事情是所有的应用容器均通过http的方式和ambassador容器交互，而ambassador容器与API服务器通过https交互。
+
+**运行带有附加ambassador容器的curl pod**
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: curl-with-ambassador
+spec:
+  containers:
+  - name: main
+    image: rancher/curl
+    command: ["sleep", "9999999"]
+  - name: ambassador
+    image: luksa/kubectl-proxy:1.6.2
+```
+
+然后你会发现，确实不需要证书和token,但是一样的还是错。
+```
+k  exec -it curl-with-ambassador -c main -- /bin/sh
+/ # curl localhost:8001
+{
+  "kind": "Status",
+  "apiVersion": "v1",
+  "metadata": {
+
+  },
+  "status": "Failure",
+  "message": "forbidden: User \"system:serviceaccount:default:default\" cannot get path \"/\"",
+  "reason": "Forbidden",
+  "details": {
+
+  },
+  "code": 403
+}/ #
+```
+加密，授权，传输，服务器验证工作交给ambassador容器中的kubectl proxy来做了
+
+### 8.2.4 使用客户端库与API服务器交互
+刚才我们体验的是使用ambassador容器kubectl-proxy的好处。如果我们的应用仅仅需要在API服务器中执行一些简单的操作，往往尅使用一个标准的客户端来执行一些简单的http操作请求。但是如果执行复杂的API请求来说，使用某个已有的kubernetes api客户端会更好一些。
+**使用已有的客户端库**
+**一个使用Fabric8 Java库与Kubernetes进行交互的例子**
+一个Fabirc8 Kubernetes客户端李处一个Java应用中的服务。
 
 
 
